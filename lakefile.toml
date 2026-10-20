@@ -1,10 +1,11 @@
 name = "duplicate-dependent-types"
 version = "0.1.0"
-defaultTargets = ["duplicate-dependent-types"]
+defaultTargets = ["duplicates"]
 
 [[lean_lib]]
 name = "DuplicateDependentTypes"
 
 [[lean_exe]]
-name = "duplicate-dependent-types"
+name = "duplicates"
 root = "Main"
+supportInterpreter = true

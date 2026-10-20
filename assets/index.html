@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(function(){var s=null;try{s=localStorage.getItem('theme')}catch(e){}
+var l=window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches;
+document.documentElement.setAttribute('data-theme',s||(l?'light':'dark'))})();</script>
+<title>Duplicate theorems</title>
+<style>
+/*STYLE*/
+</style>
+</head>
+<body><nav class="top"><span class="brand"><a href="#" id="home">duplicate-dependent-types</a></span>
+<button class="theme" id="theme" title="toggle light/dark">◐</button></nav>
+<main class="wrap" id="list">
+<header>
+<h1 id="title">Duplicate theorems</h1>
+<p>Groups of theorems whose statements are the same type up to isomorphism (reordered or curried binders, swapped
+sides, equivalent connectives), each proved separately.</p>
+<p class="versions small" id="versions"></p>
+</header>
+<div class="filters">
+<input id="q" type="search" placeholder="search declaration names, modules…" autocomplete="off">
+<select id="f-pk"><option value="">packages: any</option></select>
+<select id="f-loc"><option value="">location: any</option><option>same file</option><option>cross-file</option><option>cross-area</option><option>cross-package</option></select>
+<select id="f-sk"><option value="">statements: any</option><option value="same">syntactically equal</option><option value="defeq">definitionally equal</option><option value="not defeq">equal up to isomorphism only</option></select>
+<select id="f-tr"><option value="">triviality: any</option><option>all trivial</option><option>some trivial</option><option>substantive</option></select>
+<select id="f-u"><option value="">usage: any</option><option>one side unused</option><option>none used</option><option>all used</option></select>
+<span class="chk"><label><input id="f-tw" type="checkbox"> hide probable API pairs</label>
+<span class="info" tabindex="0" aria-label="what is a probable API pair?">i<span class="pop" role="tooltip">
+<b>Probable API pairs</b> are duplicates that look written twice on purpose rather than by accident. A pair counts as one if:
+<ul>
+<li>the two are declared in one module within 12 lines of each other, or are recognised twins: both orientations of an <code>=</code> / <code>↔</code> / <code>≠</code> (<code>A_eq_B</code> / <code>B_eq_A</code>), primed variants, <code>contains</code> / <code>mem</code> twins, names differing by a symmetric word pair;</li>
+<li>they are a reordered or re-oriented pair in one file where one side is <code>@[simp]</code>;</li>
+<li>one side lives in an internal namespace (<code>Internal</code>, <code>Simproc</code>, <code>Grind</code>, <code>Omega</code>, <code>Tactic</code>, <code>Meta</code>, …).</li>
+</ul>
+Hiding them leaves the duplicates most likely to be accidental.</span></span></span>
+<button id="reset">reset</button>
+</div>
+<p id="count" class="muted small"></p>
+<div class="tw"><table id="cls" class="small sortable"><thead><tr>
+<th data-k="a">duplicate</th><th data-k="sk">statements</th><th data-k="loc">location</th><th data-k="pk">packages</th>
+<th data-k="tr">triviality</th><th data-k="u">usage</th></tr></thead><tbody></tbody></table></div>
+<p><button id="more" hidden>show more</button></p>
+</main>
+<main class="wrap" id="view" hidden>
+<div class="pager"><a id="back" href="#">← all duplicates</a><span><a id="prev" class="off" href="#">‹ previous</a> &nbsp; <a id="next" class="off" href="#">next ›</a></span></div>
+<div id="out"></div>
+</main>
+<script>
+/*DATA*/
+</script>
+<script>
+/*SCRIPT*/
+</script>
+</body></html>
