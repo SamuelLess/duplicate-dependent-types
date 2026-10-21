@@ -13,10 +13,9 @@ import Std.Data.HashSet
   label and the kinds of products it sits in), refined a few rounds Weisfeiler–Leman style by the
   colours of the members its label points at and of the members pointing at it. Products and
   sides are combined commutatively, names never enter a hash.
-* `iso`, a backtracking search for a witness: members are matched only against members of equal
-  hash, fewest candidates first, referrers before the members they point at, so on typical inputs
-  it never backtracks. A budget bounds the attempts (exhaustion counts as "not isomorphic"), and
-  a witness is re-checked (`witnessOk`) before it is accepted.
+* `iso`, a backtracking search for the renaming: members are matched only against members of
+  equal hash, fewest candidates first, referrers before the members they point at, so on typical
+  inputs it never backtracks. A budget bounds the attempts (exhaustion counts as "not isomorphic").
 -/
 
 namespace DuplicateDependentTypes
@@ -191,25 +190,17 @@ def annotateN (c : Colours) : Node → HNode
       .eqn (mix (mix 0xb4 (tmHash c.col T)) (sym ha hb)) T a b ha hb
 end
 
-/-- A graph prepared for matching: annotated nodes and the signature. Compute once per graph
-and reuse against many partners. -/
+/-- A graph prepared for matching: annotated nodes and the signature. -/
 structure HGraph where
-  graph : Graph
   nodes : List HNode
   sig : UInt64
   deriving Inhabited
 
 def HGraph.ofGraph (g : Graph) : HGraph :=
   let nodes := annotate (colours g) g
-  { graph := g, nodes, sig := prodHash nodes }
+  { nodes, sig := prodHash nodes }
 
 /-! ## The search -/
-
-/-- A finite partial map on names, as a list of pairs (the witness format). -/
-abbrev PMap := List (Var × Var)
-
-/-- The renaming a partial map stands for: identity outside its domain. -/
-def PMap.toFun (σ : PMap) (x : Var) : Var := (σ.lookup x).getD x
 
 /-- A partial injection on names (persistent, for backtracking). -/
 structure PM where
@@ -226,22 +217,19 @@ namespace PM
 
 /-- Extend so that renaming `t` gives `t'`. -/
 def matchTm (σ : PM) : Tm → Tm → Option PM
-  | .bvar k, .bvar k' => if k == k' then some σ else none
+  | .bvar k, .bvar k' | .atom k, .atom k' => if k == k' then some σ else none
   | .fvar i, .fvar j => σ.bind i j
-  | .atom k, .atom k' => if k == k' then some σ else none
   | .app f a, .app f' a' | .lam f a, .lam f' a' | .tpi f a, .tpi f' a' | .pi f a, .pi f' a' =>
-      (matchTm σ f f').bind fun σ => matchTm σ a a'
+      (matchTm σ f f').bind (matchTm · a a')
   | .unit, .unit | .tt, .tt => some σ
   | .sigma k A B, .sigma k' A' B' =>
-      if k == k' then (matchTm σ A A').bind fun σ => matchTm σ B B' else none
+      if k == k' then (matchTm σ A A').bind (matchTm · B B') else none
   | .conn k A B, .conn k' A' B' =>
-      if k == k' then (matchTm σ A A').bind fun σ => matchTm σ B B' else none
+      if k == k' then (matchTm σ A A').bind (matchTm · B B') else none
   | .pair T a b, .pair T' a' b' | .eq T a b, .eq T' a' b' =>
-      (matchTm σ T T').bind fun σ => (matchTm σ a a').bind fun σ => matchTm σ b b'
+      ((matchTm σ T T').bind (matchTm · a a')).bind (matchTm · b b')
   | .proj k t, .proj k' t' => if k == k' then matchTm σ t t' else none
   | _, _ => none
-
-def toPMap (σ : PM) : PMap := σ.fwd.toList
 
 end PM
 
@@ -251,16 +239,6 @@ abbrev SearchM := EStateM Unit Nat
 @[inline] def tick : SearchM Unit := do
   let n ← get
   if n == 0 then throw () else set (n - 1)
-
-abbrev Res := Option (PM × Graph)
-
-/-- The first alternative that succeeds. -/
-@[specialize] def firstSome {α} : List α → (α → SearchM Res) → SearchM Res
-  | [], _ => pure none
-  | a :: as, f => do
-    match ← f a with
-    | some r => pure (some r)
-    | none => firstSome as f
 
 /-- Can source node `s` be tried against target `t` under `σ` (cheap filter)? -/
 @[inline] def admissible (σ : PM) (s t : HNode) : Bool :=
@@ -279,122 +257,52 @@ def trialOrder (src : List HNode) (tgt : Array HNode) : List HNode :=
 
 mutual
 /-- Match the members `src` (in trial order) one-to-one with the target members at indices
-`free`, accumulating `(target index, reordered source node)`, then call `k` with the reordered
-product (in target order). `fuel` bounds the nesting depth (structural recursion; running out
-counts as exhaustion), the budget in the state bounds the number of attempts. -/
-def matchMembers : Nat → PM → List HNode → Array HNode → List Nat → List (Nat × Node) →
-    (PM → Graph → SearchM Res) → SearchM Res
-  | 0, _, _, _, _, _, _ => throw ()
-  | fuel + 1, σ, src, tgt, free, acc, k =>
-    match src with
-    | [] =>
-      let out := (acc.toArray.qsort fun a b => a.1 < b.1).toList.map (·.2)
-      k σ out
-    | s :: rest =>
-      let cands := free.filter fun i => admissible σ s tgt[i]!
-      firstSome cands fun i => do
-        tick
-        matchNode fuel σ s tgt[i]! fun σ' n₁ =>
-          matchMembers fuel σ' rest tgt (free.erase i) ((i, n₁) :: acc) k
+`free`, then continue with `k` (which may fail and make the search backtrack). -/
+partial def matchMembers (σ : PM) (src : List HNode) (tgt : Array HNode) (free : List Nat)
+    (k : PM → SearchM Bool) : SearchM Bool :=
+  match src with
+  | [] => k σ
+  | s :: rest =>
+    (free.filter (admissible σ s tgt[·]!)).anyM fun i => do
+      tick
+      matchNode σ s tgt[i]! fun σ => matchMembers σ rest tgt (free.erase i) k
 
-/-- Match two products. -/
-def matchProd : Nat → PM → List HNode → List HNode → (PM → Graph → SearchM Res) → SearchM Res
-  | 0, _, _, _, _ => throw ()
-  | fuel + 1, σ, src, tgt, k =>
-    if src.length != tgt.length then pure none else
-    let tgt := tgt.toArray
-    matchMembers fuel σ (trialOrder src tgt) tgt (List.range tgt.size) [] k
+partial def matchProd (σ : PM) (src tgt : List HNode) (k : PM → SearchM Bool) : SearchM Bool :=
+  if src.length != tgt.length then pure false else
+  let tgt := tgt.toArray
+  matchMembers σ (trialOrder src tgt) tgt (List.range tgt.size) k
 
-/-- Match two nodes; `k` receives the reordered/flipped source node. -/
-def matchNode : Nat → PM → HNode → HNode → (PM → Node → SearchM Res) → SearchM Res
-  | 0, _, _, _, _ => throw ()
-  | fuel + 1, σ, s, t, k =>
-    match s, t with
-    | .var _ x A, .var _ y B =>
-      match (σ.bind x y).bind fun σ => σ.matchTm A B with
-      | some σ' => k σ' (.var x A)
-      | none => pure none
-    | .arrow _ d c, .arrow _ d' c' =>
-      -- the conclusion first: it points at the domain
-      matchProd fuel σ c c' fun σ₁ c₁ => matchProd fuel σ₁ d d' fun σ₂ d₁ => k σ₂ (.arrow d₁ c₁)
-    | .conn _ kk a b ha hb, .conn _ kk' a' b' ha' hb' => do
-      if kk != kk' then return none
-      let straight : SearchM Res :=
-        if ha == ha' && hb == hb' then
-          matchProd fuel σ a a' fun σ₁ a₁ => matchProd fuel σ₁ b b' fun σ₂ b₁ => k σ₂ (.conn kk a₁ b₁)
-        else pure none
-      match ← straight with
-      | some r => return some r
-      | none =>
-        if ha == hb' && hb == ha' then
-          matchProd fuel σ a b' fun σ₁ a₁ => matchProd fuel σ₁ b a' fun σ₂ b₁ => k σ₂ (.conn kk b₁ a₁)
-        else return none
-    | .eqn _ T a b ha hb, .eqn _ T' a' b' ha' hb' => do
-      let some σ₁ := σ.matchTm T T' | return none
-      let straight : SearchM Res :=
-        if ha == ha' && hb == hb' then
-          match (σ₁.matchTm a a').bind fun σ => σ.matchTm b b' with
-          | some σ₂ => k σ₂ (.eqn T a b)
-          | none => pure none
-        else pure none
-      match ← straight with
-      | some r => return some r
-      | none =>
-        if ha == hb' && hb == ha' then do
-          tick
-          match (σ₁.matchTm a b').bind fun σ => σ.matchTm b a' with
-          | some σ₂ => k σ₂ (.eqn T b a)
-          | none => return none
-        else return none
-    | _, _ => pure none
+partial def matchNode (σ : PM) (s t : HNode) (k : PM → SearchM Bool) : SearchM Bool := do
+  match s, t with
+  | .var _ x A, .var _ y B =>
+    let some σ := (σ.bind x y).bind (·.matchTm A B) | return false
+    k σ
+  | .arrow _ d c, .arrow _ d' c' =>
+    -- the conclusion first: it points at the domain
+    matchProd σ c c' fun σ => matchProd σ d d' k
+  | .conn _ kk a b ha hb, .conn _ kk' a' b' ha' hb' =>
+    if kk != kk' then return false
+    if ha == ha' && hb == hb' then
+      if ← matchProd σ a a' fun σ => matchProd σ b b' k then return true
+    if ha == hb' && hb == ha' then matchProd σ a b' fun σ => matchProd σ b a' k else return false
+  | .eqn _ T a b ha hb, .eqn _ T' a' b' ha' hb' =>
+    let some σ := σ.matchTm T T' | return false
+    if ha == ha' && hb == hb' then
+      if let some σ := (σ.matchTm a a').bind (·.matchTm b b') then
+        if ← k σ then return true
+    unless ha == hb' && hb == ha' do return false
+    tick
+    let some σ := (σ.matchTm a b').bind (·.matchTm b a') | return false
+    k σ
+  | _, _ => return false
 end
-
-/-! ## The runtime witness check -/
-
-mutual
-/-- `g₁` is `g` with its products reordered and connective/equation sides flipped, recursively:
-per product a multiset equality, greedily (being equal up to reordering is an equivalence). -/
-def Graph.isReordering : Graph → Graph → Bool
-  | [], g₁ => g₁.isEmpty
-  | n :: g, g₁ => match g₁.findIdx? (Node.isReordering n) with
-    | some i => Graph.isReordering g (g₁.eraseIdx i)
-    | none => false
-def Node.isReordering : Node → Node → Bool
-  | .var x A, .var y B => x == y && A == B
-  | .arrow d c, .arrow d' c' => Graph.isReordering d d' && Graph.isReordering c c'
-  | .conn k a b, .conn k' a' b' => k == k' &&
-      ((Graph.isReordering a a' && Graph.isReordering b b') ||
-        (Graph.isReordering a b' && Graph.isReordering b a'))
-  | .eqn T a b, .eqn T' a' b' => T == T' && ((a == a' && b == b') || (a == b' && b == a'))
-  | _, _ => false
-end
-
-/-- `σ` is a finite partial injection: no name is mapped twice, no name is hit twice. -/
-def PMap.isPInj (σ : PMap) : Bool :=
-  decide (σ.map Prod.fst).Nodup && decide (σ.map Prod.snd).Nodup
-
-/-- Every name and every pointer of `g` is in the domain of `σ` (so `PMap.toFun σ` is determined
-by `σ` on `g`, and renaming `g` along it is renaming along any bijection extending `σ`). -/
-def PMap.covers (σ : PMap) (g : Graph) : Bool :=
-  let dom := σ.map Prod.fst
-  (Graph.names g).all dom.contains && (Graph.refs g).all dom.contains
-
-/-- The witness check (pure `List` code, so that soundness is a fact about this checker alone and
-not about the search): `g₁` is a reordering of `g`, `σ` is a partial injection covering every
-name and pointer of `g₁`, and renaming `g₁` along `σ` gives `g'`. -/
-def witnessOk (g g' : Graph) (σ : PMap) (g₁ : Graph) : Bool :=
-  Graph.isReordering g g₁ && σ.isPInj && σ.covers g₁ &&
-    Graph.beq (Graph.rename (PMap.toFun σ) g₁) g'
-
-/-- Fuel for the nesting depth of the search. -/
-def searchFuel (g : Graph) : Nat := 4 * Graph.size g + 8
 
 /-- Are the two prepared graphs isomorphic? `false` also when the search exceeds `budget`. -/
 def iso (g g' : HGraph) (budget : Nat) : Bool :=
   g.sig == g'.sig &&
-  match (matchProd (searchFuel g.graph) {} g.nodes g'.nodes fun σ g₁ => pure (some (σ, g₁))).run budget with
-  | .ok (some (σ, g₁)) _ => witnessOk g.graph g'.graph σ.toPMap g₁
-  | _ => false
+  match (matchProd {} g.nodes g'.nodes fun _ => pure true).run budget with
+  | .ok r _ => r
+  | .error .. => false
 
 /-! ## The bucket key -/
 
@@ -404,35 +312,36 @@ def mix (a b : Nat) : Nat := (a * 1000003 + b + 1) % 4294967291
 
 def sym (a b : Nat) : Nat := mix (a + b) (a * b)
 
-/-- A hash of the shape of a label with the pointers erased. -/
-def shape : Tm → Nat
+/-- A hash of the shape of a label with the pointers erased, atom `k` hashed as `h k`. -/
+def shape (h : Nat → Nat) : Tm → Nat
   | .bvar k => mix 1 k
   | .fvar _ => 2
-  | .atom k => mix 3 k
-  | .app f a => mix (mix 4 (shape f)) (shape a)
-  | .lam A b => mix (mix 5 (shape A)) (shape b)
-  | .tpi A B => mix (mix 6 (shape A)) (shape B)
+  | .atom k => mix 3 (h k)
+  | .app f a => mix (mix 4 (shape h f)) (shape h a)
+  | .lam A b => mix (mix 5 (shape h A)) (shape h b)
+  | .tpi A B => mix (mix 6 (shape h A)) (shape h B)
   | .unit => 7
   | .tt => 8
-  | .pi A B => mix (mix 9 (shape A)) (shape B)
-  | .sigma k A B => mix (mix (mix 10 (if k = .ex then 0 else 1)) (shape A)) (shape B)
-  | .pair T a b => mix (mix (mix 11 (shape T)) (shape a)) (shape b)
-  | .proj k t => mix (mix 12 (if k then 1 else 0)) (shape t)
-  | .conn k A B => mix (mix (mix 13 (if k = .or then 0 else 1)) (shape A)) (shape B)
-  | .eq T a b => mix (mix (mix 14 (shape T)) (shape a)) (shape b)
+  | .pi A B => mix (mix 9 (shape h A)) (shape h B)
+  | .sigma k A B => mix (mix (mix 10 (if k == .ex then 0 else 1)) (shape h A)) (shape h B)
+  | .pair T a b => mix (mix (mix 11 (shape h T)) (shape h a)) (shape h b)
+  | .proj k t => mix (mix 12 (if k then 1 else 0)) (shape h t)
+  | .conn k A B => mix (mix (mix 13 (if k == .or then 0 else 1)) (shape h A)) (shape h B)
+  | .eq T a b => mix (mix (mix 14 (shape h T)) (shape h a)) (shape h b)
 
 end Shape
 
 mutual
-def Graph.shapeSig : Graph → Nat
+/-- The bucket key of a normal form, atom `k` hashed as `h k`. -/
+def Graph.shapeSig (h : Nat → Nat) : Graph → Nat
   | [] => 0
-  | n :: g => Node.shapeSig n + Graph.shapeSig g
-def Node.shapeSig : Node → Nat
-  | .var _ A => Shape.mix 20 (Shape.shape A)
-  | .arrow d c => Shape.mix (Shape.mix 21 (Graph.shapeSig d)) (Graph.shapeSig c)
+  | n :: g => Node.shapeSig h n + Graph.shapeSig h g
+def Node.shapeSig (h : Nat → Nat) : Node → Nat
+  | .var _ A => Shape.mix 20 (Shape.shape h A)
+  | .arrow d c => Shape.mix (Shape.mix 21 (Graph.shapeSig h d)) (Graph.shapeSig h c)
   | .conn k a b =>
-    Shape.mix (Shape.mix 22 (if k = .or then 0 else 1)) (Shape.sym (Graph.shapeSig a) (Graph.shapeSig b))
-  | .eqn T a b => Shape.mix (Shape.mix 23 (Shape.shape T)) (Shape.sym (Shape.shape a) (Shape.shape b))
+    Shape.mix (Shape.mix 22 (if k == .or then 0 else 1)) (Shape.sym (Graph.shapeSig h a) (Graph.shapeSig h b))
+  | .eqn T a b => Shape.mix (Shape.mix 23 (Shape.shape h T)) (Shape.sym (Shape.shape h a) (Shape.shape h b))
 end
 
 end DuplicateDependentTypes

@@ -8,23 +8,22 @@ import DuplicateDependentTypes.Match
 1. **extract** the theorems of the selected modules (no instances, private or auto-generated
    declarations), universe parameters renamed positionally;
 2. **encode and normalise** in `jobs` tasks, each on its own atom table, then name the universe
-   parameters canonically (re-encoding if a name changes). The bucket key and the signature are
-   computed with every atom replaced by the hash of its `Expr`, so they agree across tasks; the
-   normal form itself is dropped;
+   parameters canonically (re-encoding if a name changes). The bucket key is computed with every
+   atom replaced by the hash of its `Expr`, so it agrees across tasks; the normal form itself is
+   dropped;
 3. **bucket** by key, compute the normal forms of the statements that share a bucket again on
-   the merged atom table, and **match** each bucket against its class representatives (same
-   signature first), buckets in tasks.
+   the merged atom table, and **match** each bucket against its class representatives, buckets
+   in tasks.
 -/
 
 namespace DuplicateDependentTypes
 
 open Lean Meta
 
-/-! Budgets per statement: initial graph size, `Expr` tree size, rule applications, normal form
-size, heartbeats for encoding, attempts of the isomorphism search. -/
-def maxSize : Nat := 3000
+/-! Budgets per statement: `Expr` tree size, encoded size, normal form size, heartbeats for
+encoding, attempts of the isomorphism search. -/
 def maxExprSize : Nat := 20000
-def maxSteps : Nat := 20000
+def maxSize : Nat := 3000
 def maxNfSize : Nat := 30000
 def declHeartbeats : Nat := 50000 * 1000
 def searchBudget : Nat := 100000
@@ -155,15 +154,11 @@ def encodeNormalize (table : AtomTable) (type : Expr) : MetaM (Option (Graph × 
   let r ← guarded declHeartbeats ((encodeProp maxSize type).run table)
   modify fun s => { s with cache := {} }
   let .ok (tm, table) := r | return none
-  match normalize tm maxSteps maxNfSize with
-  | .ok nf => return some (nf, table)
-  | .error _ => return none
+  return (normalize tm maxNfSize).map (·, table)
 
 structure Entry where
   decl : Decl
   key : Nat
-  sig : UInt64
-  nfSize : Nat
   deriving Inhabited
 
 /-- One task's share: the entries (with their declaration index) and the task's atom table. -/
@@ -175,40 +170,30 @@ def runShare (decls : Array Decl) (idxs : Array Nat) : MetaM (Array (Nat × Entr
     unless exprSizeLe d.type maxExprSize do continue
     let some (nf, table') ← encodeNormalize table d.type | continue
     let ren := canonLevelRenaming d.type table'.atoms nf d.levelParams
-    let mut d := { d with levelParams := ren.map (·.2) }
-    let mut nf := nf
+    let mut (d, nf) := (d, nf)
     table := table'
     unless isIdRenaming ren do
       let d' := { d with type := renameLevels d.type ren }
       if let some (nf', table') ← encodeNormalize table d'.type then
         d := d'; nf := nf'; table := table'
     let atoms := table.atoms
-    let keyed := Graph.mapAtoms (fun k => (hash atoms[k]!).toNat) nf
-    out := out.push (i, { decl := d, key := keyed.shapeSig, sig := (HGraph.ofGraph keyed).sig,
-                          nfSize := Graph.size nf })
+    out := out.push (i, { decl := d, key := nf.shapeSig fun k => (hash atoms[k]!).toNat })
   return (out, table)
 
 /-- The normal form of an entry again, on the merged atom table. -/
 def renormalize (table : AtomTable) (e : Entry) : MetaM HGraph := do
-  match ← encodeNormalize table e.decl.type with
-  | some (nf, table') =>
-    unless table'.atoms.size == table.atoms.size && Graph.size nf == e.nfSize do
-      throwError "the normal form of {e.decl.name} changed"
-    return HGraph.ofGraph nf
-  | none => throwError "the normal form of {e.decl.name} could not be computed again"
+  let some (nf, _) ← encodeNormalize table e.decl.type
+    | throwError "the normal form of {e.decl.name} could not be computed again"
+  return HGraph.ofGraph nf
 
 /-! ## Classes -/
 
 /-- The statements of a bucket as classes of isomorphic normal forms, as lists of entry indices
 (the representative first). -/
-def matchBucket (hgs : Std.HashMap Nat HGraph) (entries : Array Entry) (b : Array Nat) :
-    Array (Array Nat) := Id.run do
+def matchBucket (hgs : Std.HashMap Nat HGraph) (b : Array Nat) : Array (Array Nat) := Id.run do
   let mut cls : Array (Array Nat) := #[]
   for k in b do
-    let sig := entries[k]!.sig
-    let cands := (List.range cls.size).filter (entries[cls[·]![0]!]!.sig == sig) ++
-      (List.range cls.size).filter (entries[cls[·]![0]!]!.sig != sig)
-    match cands.find? fun ci => iso hgs[cls[ci]![0]!]! hgs[k]! searchBudget with
+    match cls.findIdx? fun c => iso hgs[c[0]!]! hgs[k]! searchBudget with
     | some ci => cls := cls.modify ci (·.push k)
     | none => cls := cls.push #[k]
   return cls
@@ -221,7 +206,7 @@ structure Clustering where
 
 def cluster (prefixes : Array Lean.Name) (jobs : Nat) : MetaM Clustering := do
   let decls ← extract prefixes
-  IO.eprintln s!"duplicates: {decls.size} theorems, encoding and normalising in {jobs} task(s)"
+  IO.eprintln s!"duplicates: analysing {decls.size} theorems in {jobs} task(s)"
   let outs ← spawnAll ((shares decls.size jobs 64).map (runShare decls))
   let mut atoms : Array Expr := #[]
   let mut index : Std.HashMap Expr Nat := {}
@@ -235,7 +220,6 @@ def cluster (prefixes : Array Lean.Name) (jobs : Nat) : MetaM Clustering := do
   for (rs, _) in outs do
     for (i, e) in rs do slot := slot.set! i (some e)
   let entries := slot.filterMap id
-  IO.eprintln s!"duplicates: {entries.size} statements normalised"
   let mut buckets : Std.HashMap Nat (Array Nat) := {}
   let mut order : Array Nat := #[]
   for h : k in [:entries.size] do
@@ -248,14 +232,12 @@ def cluster (prefixes : Array Lean.Name) (jobs : Nat) : MetaM Clustering := do
   let renorm ← spawnAll ((shares flat.size jobs 16).map fun idxs =>
     idxs.mapM fun j => return (flat[j]!, ← renormalize table entries[flat[j]!]!))
   let hgs : Std.HashMap Nat HGraph := renorm.foldl (·.insertMany ·) {}
-  IO.eprintln s!"duplicates: {flat.size} statements share a bucket, matching"
   let matched ← spawnAll ((shares shared.size jobs 1).map fun idxs =>
-    return idxs.map fun bi => (bi, matchBucket hgs entries shared[bi]!))
+    return idxs.map fun bi => (bi, matchBucket hgs shared[bi]!))
   let mut perBucket : Array (Array (Array Nat)) := .replicate shared.size #[]
   for rs in matched do
     for (bi, cls) in rs do perBucket := perBucket.set! bi cls
   let classes := perBucket.flatten.filter (·.size ≥ 2) |>.map (·.map (entries[·]!.decl))
-  IO.eprintln s!"duplicates: {entries.size} statements analysed, {classes.size} classes with ≥ 2 members"
   return { extracted := decls.size, analysed := entries.size, classes }
 
 end DuplicateDependentTypes

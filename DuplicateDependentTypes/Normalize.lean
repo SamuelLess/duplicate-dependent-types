@@ -45,7 +45,7 @@ structure Occ where
   bvar : Nat
   path : List Bool
   mult : Nat
-  deriving Inhabited, Repr
+  deriving Inhabited
 
 def pathLt : List Bool → List Bool → Bool
   | [], [] => false
@@ -55,8 +55,6 @@ def pathLt : List Bool → List Bool → Bool
 
 @[inline] def Occ.keyLt (a b : Occ) : Bool :=
   a.bvar < b.bvar || (a.bvar == b.bvar && pathLt a.path b.path)
-
-@[inline] def Occ.keyEq (a b : Occ) : Bool := a.bvar == b.bvar && a.path == b.path
 
 /-- Merge two summaries (sorted by key), adding multiplicities. -/
 def mergeOcc (a b : Array Occ) : Array Occ := Id.run do
@@ -102,8 +100,9 @@ def intern (a : Arena) (k : K) (kids : Array Nat) (tm : Tm) (occ : Array Occ)
   match a.index[(k, kids)]? with
   | some i => (i, a)
   | none =>
-    let i := a.nodes.size
-    (i, { nodes := a.nodes.push { k, kids, tm, occ, chain }, index := a.index.insert (k, kids) i })
+    let ⟨nodes, index⟩ := a  -- taken apart, so that the arrays are not shared when extended
+    let i := nodes.size
+    (i, { nodes := nodes.push { k, kids, tm, occ, chain }, index := index.insert (k, kids) i })
 
 /-- Add a term and all its subterms; returns the node of the term. Subterms are memoised by
 object identity (`ptrAddrUnsafe`: the encoder shares equal subterms as objects, and the input
@@ -199,7 +198,6 @@ structure Item where
 structure Prod where
   head : Nat := nil
   tail : Nat := nil
-  count : Nat := 0
   parent : Nat := nil
   deriving Inhabited
 
@@ -215,13 +213,11 @@ structure St where
   items : Array Item := #[]
   prods : Array Prod := #[]
   repl : Array Repl := #[]
-  /-- Routed demands per live name. -/
-  cnt : Array Nat := #[]
+  /-- The occurrences routed to each live name, per projection path. -/
   demands : Array (Std.HashMap (List Bool) Nat) := #[]
   itemOfName : Array Nat := #[]
   fresh : Nat := 0
   work : Array Nat := #[]
-  steps : Nat := 0
   deriving Inhabited
 
 abbrev M := StateM St
@@ -248,10 +244,9 @@ def newItem (k : ItemK) (prod : Nat) : M Nat := modifyGet fun s =>
 
 def freshName (item : Nat) : M Var := modifyGet fun s =>
   let x := s.fresh
-  let r := s.repl; let c := s.cnt; let d := s.demands; let io := s.itemOfName
-  let s := { s with repl := #[], cnt := #[], demands := #[], itemOfName := #[] }
-  (x, { s with fresh := x + 1, repl := r.push .live, cnt := c.push 0, demands := d.push {},
-                itemOfName := io.push item })
+  let r := s.repl; let d := s.demands; let io := s.itemOfName
+  let s := { s with repl := #[], demands := #[], itemOfName := #[] }
+  (x, { s with fresh := x + 1, repl := r.push .live, demands := d.push {}, itemOfName := io.push item })
 
 def forgetName (x : Var) : M Unit := modify fun s =>
   let io := s.itemOfName; let s := { s with itemOfName := #[] }
@@ -259,20 +254,13 @@ def forgetName (x : Var) : M Unit := modify fun s =>
 
 /-! ## Routing of occurrences -/
 
-/-- A member's rule may apply once nothing points at it. -/
-def isCountRule : K → Bool
-  | .pi | .conn _ | .eq => true
-  | _ => false
-
 mutual
 /-- Route `m` occurrences of name `g` under `path` to the live names they stand for. -/
 partial def route (g : Var) (path : List Bool) (m : Nat) : M Unit := do
   match (← get).repl[g]! with
   | .live => modify fun s =>
-      let c := s.cnt; let d := s.demands
-      let s := { s with cnt := #[], demands := #[] }
-      { s with cnt := c.modify g (· + m),
-               demands := d.modify g fun dm => dm.insert path (dm.getD path 0 + m) }
+      let d := s.demands; let s := { s with demands := #[] }
+      { s with demands := d.modify g fun dm => dm.insert path (dm.getD path 0 + m) }
   | .tt => pure ()
   | .pair T a b =>
     match path with
@@ -285,18 +273,16 @@ partial def routeClo (c : Clo) (m : Nat) : M Unit := do
 end
 
 mutual
-/-- Undo `route`; a live name whose count reaches 0 is rechecked. -/
+/-- Undo `route`; a live name that no label points at any more is rechecked. -/
 partial def unroute (g : Var) (path : List Bool) (m : Nat) : M Unit := do
   match (← get).repl[g]! with
   | .live =>
     let zero ← modifyGet fun s =>
-      let c := s.cnt; let d := s.demands
-      let s := { s with cnt := #[], demands := #[] }
-      let n := c[g]! - m
-      (n == 0, { s with cnt := c.set! g n,
-                        demands := d.modify g fun dm =>
-                          let v := dm.getD path 0
-                          if v ≤ m then dm.erase path else dm.insert path (v - m) })
+      let d := s.demands; let s := { s with demands := #[] }
+      let d := d.modify g fun dm =>
+        let v := dm.getD path 0
+        if v ≤ m then dm.erase path else dm.insert path (v - m)
+      (d[g]!.isEmpty, { s with demands := d })
     if zero then
       let it := (← get).itemOfName[g]!
       if it != nil then pushWork it
@@ -325,8 +311,7 @@ def appendItem (p i : Nat) : M Unit := do
   let pr ← getProd p
   modifyItem i fun it => { it with prod := p, prev := pr.tail, next := nil }
   if pr.tail != nil then modifyItem pr.tail fun it => { it with next := i }
-  modifyProd p fun pr => { pr with head := if pr.head == nil then i else pr.head, tail := i,
-                                   count := pr.count + 1 }
+  modifyProd p fun pr => { pr with head := if pr.head == nil then i else pr.head, tail := i }
 
 def insertAfter (a i : Nat) : M Unit := do
   let ia ← getItem a
@@ -334,7 +319,7 @@ def insertAfter (a i : Nat) : M Unit := do
   modifyItem i fun it => { it with prod := p, prev := a, next := ia.next }
   if ia.next != nil then modifyItem ia.next fun it => { it with prev := i }
   modifyItem a fun it => { it with next := i }
-  modifyProd p fun pr => { pr with tail := if pr.tail == a then i else pr.tail, count := pr.count + 1 }
+  modifyProd p fun pr => { pr with tail := if pr.tail == a then i else pr.tail }
 
 def unlink (i : Nat) : M Unit := do
   let it ← getItem i
@@ -342,7 +327,7 @@ def unlink (i : Nat) : M Unit := do
   if it.next != nil then modifyItem it.next fun x => { x with prev := it.prev }
   modifyProd it.prod fun pr =>
     { pr with head := if pr.head == i then it.next else pr.head,
-              tail := if pr.tail == i then it.prev else pr.tail, count := pr.count - 1 }
+              tail := if pr.tail == i then it.prev else pr.tail }
 
 partial def itemsOf (p : Nat) : M (Array Nat) := do
   let pr ← getProd p
@@ -372,8 +357,6 @@ def recheckParent (p : Nat) : M Unit := do
   let pr ← getProd p
   if pr.parent != nil then pushWork pr.parent
 
-def bumpSteps : M Unit := modify fun s => { s with steps := s.steps + 1 }
-
 /-- A new member `x : (kid, env)` of product `p` (not linked yet). -/
 def mkMember (p : Nat) (kid : Nat) (env : Env) : M (Nat × Var) := do
   let j ← newItem .dead p
@@ -383,18 +366,15 @@ def mkMember (p : Nat) (kid : Nat) (env : Env) : M (Nat × Var) := do
   routeClo c 1
   return (j, x)
 
-/-- `x : True` goes, `x := trivial`. -/
-def ruleUnit (i : Nat) (x : Var) : M Unit := do
-  bumpSteps
+/-- Item `i` and everything in it go. -/
+def removeItem (i : Nat) : M Unit := do
   let p := (← getItem i).prod
-  replace x .tt
   unlink i
   killItem i
   recheckParent p
 
 /-- `x : Σ y : A, B` becomes `a : A, b : B[a]`, `x := ⟨a, b⟩`. -/
 def ruleSigma (i : Nat) (x : Var) (c : Clo) : M Unit := do
-  bumpSteps
   let p := (← getItem i).prod
   let n ← node c.node
   let (ja, a) ← mkMember p n.kids[0]! c.env
@@ -407,71 +387,42 @@ def ruleSigma (i : Nat) (x : Var) (c : Clo) : M Unit := do
   pushWork ja; pushWork jb
   recheckParent p
 
-/-- An unreferenced `x : ∀ y : A, B` becomes `[a : A] ⟶ [b : B[a]]`. -/
-def rulePi (i : Nat) (x : Var) (c : Clo) : M Unit := do
-  bumpSteps
-  let it ← getItem i
-  let n ← node c.node
-  let pd ← newProd i
-  let pc ← newProd i
-  let (ja, a) ← mkMember pd n.kids[0]! c.env
-  let (jb, _) ← mkMember pc n.kids[1]! (c.env.push a)
-  unrouteClo c 1
-  forgetName x
-  appendItem pd ja
-  appendItem pc jb
-  setItem i { it with k := .arrow pd pc }
-  pushWork ja; pushWork jb; pushWork i
-  recheckParent it.prod
-
-/-- An unreferenced `x : A ∨ B` / `A ↔ B` becomes the node `[a : A] ∨ [b : B]`. -/
-def ruleConn (i : Nat) (x : Var) (k : Conn) (c : Clo) : M Unit := do
-  bumpSteps
+/-- An unreferenced `x : ∀ y : A, B` becomes `[a : A] ⟶ [b : B[a]]` (`k? = none`), an
+unreferenced `x : A ∨ B` / `A ↔ B` the node `[a : A] ∨ [b : B]`. -/
+def ruleSplit (i : Nat) (x : Var) (c : Clo) (k? : Option Conn) : M Unit := do
   let it ← getItem i
   let n ← node c.node
   let pa ← newProd i
   let pb ← newProd i
-  let (ja, _) ← mkMember pa n.kids[0]! c.env
-  let (jb, _) ← mkMember pb n.kids[1]! c.env
+  let (ja, a) ← mkMember pa n.kids[0]! c.env
+  let (jb, _) ← mkMember pb n.kids[1]! (if k?.isNone then c.env.push a else c.env)
   unrouteClo c 1
   forgetName x
   appendItem pa ja
   appendItem pb jb
-  setItem i { it with k := .conn k pa pb }
-  pushWork ja; pushWork jb
+  setItem i { it with k := match k? with | some k => .conn k pa pb | none => .arrow pa pb }
+  pushWork ja; pushWork jb; pushWork i
   recheckParent it.prod
 
 /-- An unreferenced `x : a = b` becomes the node `a = b` (same occurrences, nothing to route). -/
 def ruleEq (i : Nat) (x : Var) (c : Clo) : M Unit := do
-  bumpSteps
   let it ← getItem i
   forgetName x
   setItem i { it with k := .eqn c }
   recheckParent it.prod
 
+/-- `[] ⟶ C` becomes `C`. -/
 def ruleArrowUnit (i : Nat) (c : Nat) : M Unit := do
-  bumpSteps
-  let it ← getItem i
-  let p := it.prod
   let mut after := i
   for j in ← itemsOf c do
     unlink j
     insertAfter after j
     after := j
     pushWork j
-  unlink i
-  setItem i { it with k := .dead }
-  recheckParent p
+  removeItem i
 
-def ruleArrowErase (i : Nat) : M Unit := do
-  bumpSteps
-  let p := (← getItem i).prod
-  unlink i
-  killItem i
-  recheckParent p
-
+/-- `Δ ⟶ [Δ' ⟶ C]` becomes `Δ, Δ' ⟶ C`. -/
 def ruleArrowMerge (i d : Nat) (j d' c' : Nat) : M Unit := do
-  bumpSteps
   let it ← getItem i
   for x in ← itemsOf d' do
     unlink x
@@ -483,25 +434,25 @@ def ruleArrowMerge (i d : Nat) (j d' c' : Nat) : M Unit := do
   setItem i { it with k := .arrow d c' }
   pushWork i
 
+def unreferenced (x : Var) : M Bool := return (← get).demands[x]!.isEmpty
+
 def check (i : Nat) : M Unit := do
   let it ← getItem i
   match it.k with
   | .var x c =>
     match (← node c.node).k with
-    | .unit => ruleUnit i x
+    | .unit => replace x .tt; removeItem i
     | .sigma _ => ruleSigma i x c
-    | .pi => if (← get).cnt[x]! == 0 then rulePi i x c
-    | .conn k => if (← get).cnt[x]! == 0 then ruleConn i x k c
-    | .eq => if (← get).cnt[x]! == 0 then ruleEq i x c
+    | .pi => if ← unreferenced x then ruleSplit i x c none
+    | .conn k => if ← unreferenced x then ruleSplit i x c k
+    | .eq => if ← unreferenced x then ruleEq i x c
     | _ => pure ()
   | .arrow d c =>
-    let pd ← getProd d
     let pc ← getProd c
-    if pd.count == 0 then ruleArrowUnit i c
-    else if pc.count == 0 then ruleArrowErase i
-    else if pc.count == 1 then
-      let j := pc.head
-      if let .arrow d' c' := (← getItem j).k then ruleArrowMerge i d j d' c'
+    if (← getProd d).head == nil then ruleArrowUnit i c
+    else if pc.head == nil then removeItem i
+    else if pc.head == pc.tail then
+      if let .arrow d' c' := (← getItem pc.head).k then ruleArrowMerge i d pc.head d' c'
   | _ => pure ()
 
 /-! ## Forcing -/
@@ -558,47 +509,36 @@ partial def toGraph (s : St) (p : Nat) : Graph := Id.run do
     | .var x c => out := out.push (.var x (forceClo s c))
     | .arrow d c => out := out.push (.arrow (toGraph s d) (toGraph s c))
     | .conn k a b => out := out.push (.conn k (toGraph s a) (toGraph s b))
-    | .eqn c =>
-      match forceClo s c with
-      | .eq T a b => out := out.push (.eqn T a b)
-      | t => out := out.push (.var x_fail t)   -- unreachable: an `eq` label forces to an `eq`
+    | .eqn c => if let .eq T a b := forceClo s c then out := out.push (.eqn T a b)
     | .dead => pure ()
     cur := it.next
   return out.toList
-where x_fail : Var := nil
 
 /-! ## The loop -/
 
-partial def loop (maxSteps : Nat) : M (Option String) := do
+partial def loop : M Unit := do
   let s ← get
-  if s.work.isEmpty then return none
-  if s.steps > maxSteps then return some "steps"
-  let i := s.work.back!
+  let some i := s.work.back? | return
   set { s with work := s.work.pop }
   check i
-  loop maxSteps
+  loop
 
 end Normalize
 
 open Normalize in
-/-- The normal form of the graph `[x : t]` of a closed label `t`; `.error "steps"` /
-`.error "size"` when more than `maxSteps` rules apply or the normal form is larger than
-`maxSize`. -/
-def normalize (t : Tm) (maxSteps maxSize : Nat) : Except String Graph :=
-  let init : M (Option String) := do
+/-- The normal form of the graph `[x : t]` of a closed label `t`, if its size is at most
+`maxSize`. Every rule consumes a node of `t` or an arrow made from one, so fewer than
+`2 * t.size` rules apply. -/
+def normalize (t : Tm) (maxSize : Nat) : Option Graph :=
+  let init : M Unit := do
     let (root, arena) := (({} : Arena).add t)
     modify fun s => { s with arena }
     let p ← newProd nil
     let (i, _) ← mkMember p root {}
     appendItem p i
     pushWork i
-    loop maxSteps
-  let (r, s) := init.run {}
-  match r with
-  | some w => .error w
-  | none =>
-    let g := toGraph s 0
-    let size := Graph.size g
-    if size > maxSize then .error "size" else .ok g
+    loop
+  let g := toGraph (init.run {}).2 0
+  if g.size > maxSize then none else some g
 
 end DuplicateDependentTypes

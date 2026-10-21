@@ -44,9 +44,6 @@ def internAtom (e : Expr) : EncM Nat := do
     let k := atoms.size
     (k, { atoms := atoms.push e, index := index.insert e k })
 
-/-- The prefix of the error thrown when the size budget is exceeded. -/
-def budgetExceededMsg : String := "encodeProp: size budget exceeded"
-
 namespace Encode
 
 /-- The binders entered so far. -/
@@ -68,7 +65,7 @@ abbrev M := ReaderT Ctx (StateRefT Cache EncM)
 /-- Build a node of the given size, enforcing the budget. -/
 @[inline] def node (t : Tm) (size : Nat) : M (Tm × Nat) := do
   let b := (← read).budget
-  if size > b then throwError "{budgetExceededMsg} ({size} > {b})"
+  if size > b then throwError "encodeProp: size budget exceeded"
   return (t, size)
 
 def atomOf (e : Expr) : M (Tm × Nat) := return (.atom (← internAtom e), 1)
@@ -194,17 +191,13 @@ partial def encCore (e : Expr) (prop : Bool) : M (Tm × Nat) := do
 partial def encShape (e : Expr) (prop : Bool) : M (Tm × Nat) := do
   let c ← read
   match e with
-  | .bvar i => throwError "encodeProp: loose bound variable {i}"
-  | .mvar _ => throwError "encodeProp: metavariable {e}"
-  | .fvar id => match c.levels[id]? with
-    | some l => node (.bvar (c.depth - 1 - l)) 1
-    | none => throwError "encodeProp: free variable {e}"
+  | .fvar id =>
+    let some l := c.levels[id]? | throwError "encodeProp: free variable {e}"
+    node (.bvar (c.depth - 1 - l)) 1
   | .sort _ | .lit _ => atomOf e
   | .const ``True [] => node .unit 1
   | .const ``True.intro [] => node .tt 1
   | .const .. => atomOf e
-  | .mdata _ b => enc b prop
-  | .letE _ _ v b _ => enc (b.instantiate1 v) prop
   | .lam n t b bi => do
     let t := t.cleanupAnnotations
     let A ← enc t false
@@ -262,6 +255,7 @@ partial def encShape (e : Expr) (prop : Bool) : M (Tm × Nat) := do
           return r
       | _, _ => pure ()
     encApp f args
+  | _ => throwError "encodeProp: unsupported {e}"
 
 /-- A generic application spine. -/
 partial def encApp (f : Expr) (args : Array Expr) : M (Tm × Nat) := do
@@ -297,13 +291,8 @@ end Encode
 
 /-- Encode a closed proposition. Throws on unsupported input and when the size budget is
 exceeded. -/
-def encodeProp (budget : Nat) (e : Expr) : EncM Tm := do
-  let e ← instantiateMVars e
-  if e.hasMVar then throwError "encodeProp: metavariables in {e}"
-  if e.hasFVar then throwError "encodeProp: free variables in {e}"
-  if e.hasLooseBVars then throwError "encodeProp: loose bound variables in {e}"
-  let ((t, _), _) ← ((Encode.enc e true).run { budget }).run {}
-  return t
+def encodeProp (budget : Nat) (e : Expr) : EncM Tm :=
+  return (← ((Encode.enc e true).run { budget }).run' {}).1
 
 /-! ## Canonical names of universe parameters
 
@@ -362,17 +351,6 @@ def levelRoleKey (atoms : Array Expr) (ids : Array Nat) (p : Lean.Name) : Array 
     some marked.hash
   hs.qsort (· < ·)
 
-/-- Lexicographic order on keys (a proper prefix first). -/
-def keyLt (a b : Array UInt64) : Bool := go 0
-where
-  go (i : Nat) : Bool :=
-    if h : i < a.size then
-      if h' : i < b.size then
-        if a[i] < b[i] then true else if a[i] > b[i] then false else go (i + 1)
-      else false
-    else i < b.size
-  termination_by a.size - i
-
 /-- The canonical renaming of the universe parameters of `type`, as `(old, new)` pairs for the
 parameters occurring in `type`, in the canonical order (the `i`-th is renamed to `u_{i+1}`).
 `atoms`/`nf`: the atom table and the normal form of a first encoding of `type`; `tie`: the
@@ -389,10 +367,9 @@ def canonLevelRenaming (type : Expr) (atoms : Array Expr) (nf : Graph) (tie : Li
   let lt (x y : Lean.Name × Array UInt64 × Nat) : Bool :=
     let (_, kx, ix) := x
     let (_, ky, iy) := y
-    -- parameters occurring in the normal form first
+    -- parameters occurring in the normal form first, then keys in lexicographic order
     if kx.isEmpty != ky.isEmpty then !kx.isEmpty
-    else if keyLt kx ky then true
-    else if keyLt ky kx then false
+    else if kx != ky then decide (kx.toList < ky.toList)
     else ix < iy
   let sorted := keyed.qsort lt
   (sorted.toList.zipIdx).map fun ((p, _, _), i) => (p, canonLevelName i)
