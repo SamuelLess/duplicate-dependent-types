@@ -47,21 +47,25 @@ def isAuxiliary (n : Lean.Name) : CoreM Bool := do
       if !s.startsWith "eq_" then return true
   return false
 
-private def selectedBy (ps : Std.HashSet Lean.Name) : Lean.Name → Bool
-  | .anonymous => false
-  | n@(.str p _) | n@(.num p _) => ps.contains n || selectedBy ps p
+/-- Is a module one of `prefixes` or below one? -/
+def isBelow (prefixes : Array Lean.Name) : Lean.Name → Bool :=
+  let ps : Std.HashSet Lean.Name := prefixes.foldl (·.insert ·) {}
+  let rec go : Lean.Name → Bool
+    | .anonymous => false
+    | n@(.str p _) | n@(.num p _) => ps.contains n || go p
+  go
 
 def canonLevels (n : Nat) : List Lean.Name := (List.range n).map (canonLevelName ·)
 
 /-- The theorems of the modules below `prefixes`, in module then name order. -/
 def extract (prefixes : Array Lean.Name) : CoreM (Array Decl) := do
   let env ← getEnv
-  let ps : Std.HashSet Lean.Name := prefixes.foldl (·.insert ·) {}
+  let below := isBelow prefixes
   let names := env.header.moduleNames
   let mut out := #[]
   for idx in [:names.size] do
     let m := names[idx]!
-    unless selectedBy ps m do continue
+    unless below m do continue
     let cs := env.header.moduleData[idx]!.constants.qsort fun a b => Lean.Name.lt a.name b.name
     for c in cs do
       let n := c.name
