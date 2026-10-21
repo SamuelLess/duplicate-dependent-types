@@ -2,9 +2,8 @@
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<script>(function(){var s=null;try{s=localStorage.getItem('theme')}catch(e){}
-var l=window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches;
-document.documentElement.setAttribute('data-theme',s||(l?'light':'dark'))})();</script>
+<script>try{var s=localStorage.getItem('theme')}catch(e){}
+document.documentElement.setAttribute('data-theme',s||(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'))</script>
 <title>Duplicate theorems</title>
 <style>
 /*STYLE*/
@@ -38,7 +37,7 @@ Hiding them leaves the duplicates most likely to be accidental.</span></span></s
 <button id="reset">reset</button>
 </div>
 <p id="count" class="muted small"></p>
-<div class="tw"><table id="cls" class="small sortable"><thead><tr>
+<div class="tw"><table id="cls"><thead><tr>
 <th data-k="a">duplicate</th><th data-k="sk">statements</th><th data-k="loc">location</th><th data-k="pk">packages</th>
 <th data-k="tr">triviality</th><th data-k="u">usage</th></tr></thead><tbody></tbody></table></div>
 <p><button id="more" hidden>show more</button></p>
