@@ -84,7 +84,7 @@ def oleanOf? (m : Name) : IO (Option FilePath) := do
 Lean's own (`<sysroot>/lib/lean/A/B.olean`), and the source directory there. -/
 def packageOf? (m : Name) : IO (Option (FilePath × FilePath)) := do
   let some p ← oleanOf? m | return none
-  for (marker, src) in [("/.lake/build/lib/lean/", "/"), ("/lib/lean/", "/src/lean/")] do
+  for (marker, src) in [("/.lake/build/lib/lean/", ""), ("/lib/lean/", "/src/lean")] do
     if let [pkg, _] := p.toString.splitOn marker then return some (pkg, pkg ++ src)
   return none
 
@@ -94,30 +94,66 @@ def sourceOfOLean (m : Name) : IO (Option FilePath) := do
   let f := modToFilePath src m "lean"
   return if ← f.pathExists then some f else none
 
-def gitRev? (dir : FilePath) : IO (Option String) := do
+def git? (dir : FilePath) (args : Array String) : IO (Option String) := do
   try
-    let out ← IO.Process.output { cmd := "git", args := #["-C", dir.toString, "rev-parse", "HEAD"] }
+    let out ← IO.Process.output { cmd := "git", args := #["-C", dir.toString] ++ args }
     return if out.exitCode == 0 then some out.stdout.trimAscii.toString else none
   catch _ => return none
 
-/-- Name, revision and URL of the packages in the workspace's `lake-manifest.json` and of the
-workspace itself that own one of the modules `mods`. -/
-def versions (ws : Workspace) (mods : Array Name) : IO (Array Json) := do
-  let realPath (d : FilePath) : IO String := do
-    try return (← IO.FS.realPath d).toString catch _ => return d.toString
+def realPath (f : FilePath) : IO String := do
+  try return (← IO.FS.realPath f).toString catch _ => return f.toString
+
+/-- A repository checkout: name, revision and URL of the package, its directory (a real path) and
+the URL prefix of its files on GitHub. -/
+structure Checkout where
+  name : String
+  rev : String
+  url : String := ""
+  root : String
+  blob? : Option String
+
+/-- `https://github.com/o/r/blob/<rev>/` for a GitHub repository (also `git@github.com:o/r.git`). -/
+def blobUrl? (url rev : String) : Option String :=
+  let u := (url.replace "git@github.com:" "https://github.com/").dropSuffix ".git" |>.toString
+  if u.startsWith "https://github.com/" then some s!"{u}/blob/{rev}/" else none
+
+/-- The packages in `lake-manifest.json` with a revision and the workspace's git checkout, then
+Lean's sources (tag `v<version>` of a release, else the commit). -/
+def checkouts (ws? : Option Workspace) : IO (Array Checkout) := do
+  let mut out := #[]
+  if let some ws := ws? then
+    if let some j := (Json.parse (← IO.FS.readFile (ws.dir / "lake-manifest.json"))).toOption then
+      let pkgsDir := (j.getObjValAs? String "packagesDir").toOption.getD ".lake/packages"
+      for p in (j.getObjValAs? (Array Json) "packages").toOption.getD #[] do
+        let (.ok name, .ok rev) := (p.getObjValAs? String "name", p.getObjValAs? String "rev") | continue
+        let url := (p.getObjValAs? String "url").toOption.getD ""
+        out := out.push { name, rev, url, root := ← realPath (ws.dir / pkgsDir / name), blob? := blobUrl? url rev }
+    if let some rev ← git? ws.dir #["rev-parse", "HEAD"] then
+      let root ← realPath ((← git? ws.dir #["rev-parse", "--show-toplevel"]).getD ws.dir.toString)
+      let blob? := blobUrl? ((← git? ws.dir #["remote", "get-url", "origin"]).getD "") rev
+      out := out.push { name := ws.name, rev, root, blob? }
+  let rev := if Lean.version.isRelease then s!"v{Lean.versionString}" else Lean.githash
+  return out.push { name := "Lean", rev, root := ← realPath ((← findSysroot) / "src" / "lean"),
+                    blob? := blobUrl? "https://github.com/leanprover/lean4" s!"{rev}/src" }
+
+/-- The checkout with the longest root that contains the real path `p`. -/
+def findCheckout? (cs : Array Checkout) (p : String) : Option Checkout :=
+  cs.foldl (init := none) fun best c =>
+    if (p == c.root || p.startsWith (c.root ++ "/")) && best.all (·.root.length < c.root.length) then some c
+    else best
+
+/-- The GitHub URL of a source file. -/
+def sourceUrl? (cs : Array Checkout) (f : FilePath) : IO (Option String) := do
+  let p ← realPath f
+  return (findCheckout? cs p).bind fun c => c.blob?.map (· ++ (p.drop (c.root.length + 1)).toString)
+
+/-- Name, revision and URL of the checkouts that own one of the modules `mods`. -/
+def versions (cs : Array Checkout) (mods : Array Name) : IO (Array Json) := do
   let mut owners : Std.HashSet String := {}
   for m in mods do
-    if let some (pkg, _) ← packageOf? m then owners := owners.insert (← realPath pkg)
-  let mut out := #[]
-  if let some j := (Json.parse (← IO.FS.readFile (ws.dir / "lake-manifest.json"))).toOption then
-    let pkgsDir := (j.getObjValAs? String "packagesDir").toOption.getD ".lake/packages"
-    for p in (j.getObjValAs? (Array Json) "packages").toOption.getD #[] do
-      let (.ok name, .ok rev) := (p.getObjValAs? String "name", p.getObjValAs? String "rev") | continue
-      let sub := (p.getObjValAs? String "subDir").toOption.getD ""
-      if owners.contains (← realPath (ws.dir / pkgsDir / name / sub)) then
-        out := out.push (Json.mkObj [("name", name), ("rev", rev), ("url", (p.getObjValAs? String "url").toOption.getD "")])
-  if owners.contains (← realPath ws.dir) then
-    if let some rev ← gitRev? ws.dir then out := out.push (Json.mkObj [("name", ws.name), ("rev", rev)])
-  return out
+    if let some (pkg, _) ← packageOf? m then
+      if let some c := findCheckout? cs (← realPath pkg) then owners := owners.insert c.root
+  return cs.filter (owners.contains ·.root) |>.map fun c =>
+    Json.mkObj [("name", c.name), ("rev", c.rev), ("url", c.url)]
 
 end DuplicateDependentTypes

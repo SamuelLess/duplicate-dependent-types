@@ -54,6 +54,7 @@ One JSON object per line and group:
 | `tr` | `all trivial`, `some trivial`, `substantive` (proof term ≤ 128 objects and proof text ≤ 110 characters) |
 | `u` | `all used`, `one side unused`, `none used` (by constants outside the group) |
 | `tw` | why `a`, `b` look like an API pair written on purpose (`adjacent`, `orientation`, `primed`, `contains-mem`, `symmetric names`, `simp`, `internal`), or `""` |
+| `url` (members) | the source on GitHub, `…/blob/<rev>/<path>#L<line>-L<end>` (`null` if not a GitHub checkout) |
 | `members` | `name`, `module`, `file`, `line`, `end`, `sig` (the signature), `src` (the source from line `from`), `dep` (why it is not an independent proof: it uses another member, is deprecated or generated with one), `gen`, `rel`, `trivial`, `used` |
 
 ## Caveats

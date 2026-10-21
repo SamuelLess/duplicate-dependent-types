@@ -155,6 +155,7 @@
 
   // one group: the independent proofs with statement and source, then the other members
   function link(m) {
+    if (m.url) return m.url;
     var f = m.file.charAt(0) === '/' ? m.file : META.root + '/' + m.file;
     return 'vscode://file' + encodeURI(f) + ':' + m.line;
   }

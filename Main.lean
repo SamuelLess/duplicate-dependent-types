@@ -71,6 +71,11 @@ unsafe def main (args : List String) : IO UInt32 := do
     unless files.contains d.module do
       if let some f ← sourceOfOLean d.module then files := files.insert d.module f
   let fileOf := fun m => files[m]?.map fun f => (if f.isAbsolute then f else cwd / f).normalize
+  let cs ← checkouts ws?
+  let mut urls : Std.HashMap Name String := {}
+  for d in c.classes.flatten do
+    if let some f := fileOf d.module then
+      if let some u ← sourceUrl? cs f then urls := urls.insert d.module u
   let annotated ← run do
     let parts ← spawnAll ((shares c.classes.size o.jobs 1).map fun idxs =>
       idxs.mapM fun i => return (i, ← annotateClass fileOf c.classes[i]!))
@@ -83,13 +88,13 @@ unsafe def main (args : List String) : IO UInt32 := do
   let ranked := (annotated.mapIdx (·, ·)).qsort fun (i, x) (j, y) =>
     strength x > strength y || (strength x == strength y && i < j)
   let wsDir := (ws?.map (·.dir)).getD cwd
-  let lines := ranked.mapIdx fun r (i, ms) => (groupJson i (r + 1) wsDir ms).compress
+  let lines := ranked.mapIdx fun r (i, ms) => (groupJson i (r + 1) wsDir (urls[·]?) ms).compress
   if let some p := jsonl? then
     IO.FS.writeFile p ("".intercalate (lines.toList.map (· ++ "\n")))
   if let some p := html? then
     let project := if o.modules.isEmpty then (ws?.map (·.name)).getD "" else ", ".intercalate (o.modules.toList.map toString)
     let info := Json.mkObj [("project", project), ("lean", Lean.versionString),
-      ("versions", toJson (← ws?.elim (pure #[]) (versions · (env.header.moduleNames.filter (isBelow prefixes))))), ("root", wsDir.toString)]
+      ("versions", toJson (← versions cs (env.header.moduleNames.filter (isBelow prefixes)))), ("root", wsDir.toString)]
     IO.FS.writeFile p (html info lines)
   IO.println s!"duplicates: {c.analysed} of {c.extracted} theorems analysed, {lines.size} groups of duplicates, {(← IO.monoMsNow) - t0} ms"
   for p in [jsonl?, html?].filterMap id do IO.println s!"duplicates: wrote {p}"
