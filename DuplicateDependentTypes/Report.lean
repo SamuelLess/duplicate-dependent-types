@@ -230,7 +230,7 @@ def apiTwin (a b : Member) : String :=
 def summary (xs : List Bool) (all part no : String) : String :=
   if xs.all id then all else if xs.any id then part else no
 
-def groupJson (id r : Nat) (wsDir : FilePath) (ms : Array Member) : Json :=
+def groupJson (id r : Nat) (wsDir : FilePath) (url? : Lean.Name → Option String) (ms : Array Member) : Json :=
   let ind := ms.filter (·.dep?.isNone)
   let (a, b) := (ind[0]!, ind[1]!)
   let pkgs := (ind.map (package ·.decl.module)).toList.eraseDups.toArray.qsort fun x y =>
@@ -242,6 +242,7 @@ def groupJson (id r : Nat) (wsDir : FilePath) (ms : Array Member) : Json :=
   let member (m : Member) := Json.mkObj [
     ("name", toJson m.decl.name), ("module", toJson m.decl.module), ("file", toJson (m.file?.map relPath)),
     ("line", m.line), ("end", m.endLine), ("from", m.srcFrom), ("src", m.src), ("sig", m.sig),
+    ("url", toJson (if m.line == 0 then none else (url? m.decl.module).map (· ++ s!"#L{m.line}-L{m.endLine}"))),
     ("dep", toJson m.dep?), ("gen", toJson m.gen?), ("rel", toJson m.rel?), ("trivial", m.trivial), ("used", m.used)]
   Json.mkObj [
     ("id", toString id), ("r", r), ("a", toJson a.decl.name), ("b", toJson b.decl.name), ("n", ms.size),
