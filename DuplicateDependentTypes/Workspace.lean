@@ -80,14 +80,19 @@ def oleanOf? (m : Name) : IO (Option FilePath) := do
   | .ok p => return if ← p.pathExists then some p else none
   | .error _ => return none
 
-/-- The source file of a module that is not one of the workspace's own. -/
-def sourceOfOLean (m : Name) : IO (Option FilePath) := do
+/-- The package directory of a module's `.olean` (`<pkg>/.lake/build/lib/lean/A/B.olean`) or of
+Lean's own (`<sysroot>/lib/lean/A/B.olean`), and the source directory there. -/
+def packageOf? (m : Name) : IO (Option (FilePath × FilePath)) := do
   let some p ← oleanOf? m | return none
   for (marker, src) in [("/.lake/build/lib/lean/", "/"), ("/lib/lean/", "/src/lean/")] do
-    if let [pkg, _] := p.toString.splitOn marker then
-      let f := modToFilePath (pkg ++ src) m "lean"
-      if ← f.pathExists then return some f
+    if let [pkg, _] := p.toString.splitOn marker then return some (pkg, pkg ++ src)
   return none
+
+/-- The source file of a module that is not one of the workspace's own. -/
+def sourceOfOLean (m : Name) : IO (Option FilePath) := do
+  let some (_, src) ← packageOf? m | return none
+  let f := modToFilePath src m "lean"
+  return if ← f.pathExists then some f else none
 
 def gitRev? (dir : FilePath) : IO (Option String) := do
   try
@@ -95,17 +100,24 @@ def gitRev? (dir : FilePath) : IO (Option String) := do
     return if out.exitCode == 0 then some out.stdout.trimAscii.toString else none
   catch _ => return none
 
-/-- Name, revision and URL of the workspace and of the packages in its `lake-manifest.json`. -/
-def versions (ws : Workspace) : IO (Array Json) := do
+/-- Name, revision and URL of the packages in the workspace's `lake-manifest.json` and of the
+workspace itself that own one of the modules `mods`. -/
+def versions (ws : Workspace) (mods : Array Name) : IO (Array Json) := do
+  let realPath (d : FilePath) : IO String := do
+    try return (← IO.FS.realPath d).toString catch _ => return d.toString
+  let mut owners : Std.HashSet String := {}
+  for m in mods do
+    if let some (pkg, _) ← packageOf? m then owners := owners.insert (← realPath pkg)
   let mut out := #[]
-  if let some rev ← gitRev? ws.dir then
-    out := out.push (Json.mkObj [("name", ws.name), ("rev", rev)])
-  let some j := (Json.parse (← IO.FS.readFile (ws.dir / "lake-manifest.json"))).toOption | return out
-  let pkgs := (j.getObjValAs? (Array Json) "packages").toOption.getD #[]
-  for p in pkgs do
-    if let (.ok name, .ok rev) := (p.getObjValAs? String "name", p.getObjValAs? String "rev") then
-      let url := (p.getObjValAs? String "url").toOption.getD ""
-      out := out.push (Json.mkObj [("name", name), ("rev", rev), ("url", url)])
+  if let some j := (Json.parse (← IO.FS.readFile (ws.dir / "lake-manifest.json"))).toOption then
+    let pkgsDir := (j.getObjValAs? String "packagesDir").toOption.getD ".lake/packages"
+    for p in (j.getObjValAs? (Array Json) "packages").toOption.getD #[] do
+      let (.ok name, .ok rev) := (p.getObjValAs? String "name", p.getObjValAs? String "rev") | continue
+      let sub := (p.getObjValAs? String "subDir").toOption.getD ""
+      if owners.contains (← realPath (ws.dir / pkgsDir / name / sub)) then
+        out := out.push (Json.mkObj [("name", name), ("rev", rev), ("url", (p.getObjValAs? String "url").toOption.getD "")])
+  if owners.contains (← realPath ws.dir) then
+    if let some rev ← gitRev? ws.dir then out := out.push (Json.mkObj [("name", ws.name), ("rev", rev)])
   return out
 
 end DuplicateDependentTypes

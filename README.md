@@ -37,7 +37,8 @@ lake exe duplicates --jobs 8                # parallel tasks (default 4)
 ```
 
 The HTML page is one file (data, styles and script inlined) with a filterable list of the groups
-and a view of each group's statements and sources; it can be uploaded as a CI artifact.
+and a view of each group's statements and sources, headed by the versions of Lean and of the
+packages analysed; it can be uploaded as a CI artifact.
 
 ## Output
 
