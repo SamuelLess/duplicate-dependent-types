@@ -15,7 +15,7 @@
   // s string, n number, a attribute, o operator
   var KW = words('theorem lemma def abbrev instance example structure class inductive where extends deriving namespace section end open variable universe import noncomputable private protected partial unsafe mutual set_option attribute local scoped macro syntax macro_rules elab notation infix infixl infixr prefix postfix alias export termination_by decreasing_by opaque axiom omit include in');
   var TERM = words('fun λ by have show from let if then else match with do at calc return for suffices obtain nomatch nofun Type Prop Sort');
-  var TAC = words("exact exacts intro intros apply refine refine' rw rwa rewrite simp simp_all simpa dsimp norm_num omega decide rfl cases rcases induction obtain use constructor ext funext subst congr gcongr linarith nlinarith positivity ring ring_nf field_simp aesop tauto trivial assumption contradiction exfalso by_contra by_cases split_ifs split left right exists existsi specialize generalize revert clear rename_i unfold change convert apply_fun push_neg push_cast norm_cast exact_mod_cast infer_instance first try repeat all_goals any_goals case next nth_rewrite nth_rw symm trans calc grind bv_decide fin_cases interval_cases filter_upwards refine_lift simp_rw simp? exact? mono continuity measurability fun_prop injection nofun nomatch show_term subst_vars cases' induction' rintro");
+  var TAC = words("exact exacts intro intros apply refine refine' rw rwa rewrite simp simp_all simpa dsimp norm_num omega decide rfl cases rcases induction use constructor ext funext subst congr gcongr linarith nlinarith positivity ring ring_nf field_simp aesop tauto trivial assumption contradiction exfalso by_contra by_cases split_ifs split left right exists existsi specialize generalize revert clear rename_i unfold change convert apply_fun push_neg push_cast norm_cast exact_mod_cast infer_instance first try repeat all_goals any_goals case next nth_rewrite nth_rw symm trans grind bv_decide fin_cases interval_cases filter_upwards refine_lift simp_rw simp? exact? mono continuity measurability fun_prop injection show_term subst_vars cases' induction' rintro");
   var TOKEN = /(--.*)|("(?:[^"\\]|\\.)*")|('(?:[^'\\]|\\.)')|(@\[)|(\b\d+(?:\.\d+)?\b)|([A-Za-z_À-ɏͰ-Ͽἀ-῿℀-⅏\u{1d400}-\u{1d7ff}«][\p{L}\p{N}_'!?À-ɏͰ-Ͽἀ-῿₀-ₜ℀-⅏\u{1d400}-\u{1d7ff}₀-₉ᵢ-ᵪ.»«]*)|(:=|=>|<;>|[←→↔∀∃λ⟨⟩▸∘⁻¹≤≥≠∈∉⊆⊂∩∪×·•∣¬∧∨⊤⊥]|<->|->|<-)/uy;
   var CLS = [null, 'c', 's', 's', 'a', 'n', null, 'o'];
   function words(s) { var o = {}; s.split(' ').forEach(function (w) { o[w] = 1; }); return o; }
@@ -86,18 +86,9 @@
     history.replaceState(null, '', listHash || location.pathname + location.search);
   }
   function match(c) {
-    if (F.q) {
-      var words = F.q.toLowerCase().split(/\s+/).filter(Boolean);
-      var hay = (c.a + ' ' + c.b + ' ' + c.m.join(' ')).toLowerCase();
-      for (var i = 0; i < words.length; i++) if (hay.indexOf(words[i]) < 0) return false;
-    }
-    if (F.pk && c.pk !== F.pk) return false;
-    if (F.loc && c.loc !== F.loc) return false;
-    if (F.sk && c.sk.indexOf(F.sk) < 0) return false;
-    if (F.tr && c.tr !== F.tr) return false;
-    if (F.u && c.u !== F.u) return false;
-    if (F.tw && c.tw) return false;
-    return true;
+    var hay = (c.a + ' ' + c.b + ' ' + c.m.join(' ')).toLowerCase();
+    return !(F.tw && c.tw) && F.q.toLowerCase().split(/\s+/).every(function (w) { return hay.indexOf(w) >= 0; }) &&
+      ids.every(function (k) { return !F[k] || (k === 'sk' ? c.sk.indexOf(F.sk) >= 0 : c[k] === F[k]); });
   }
   var SK = {'same': 'syntactically equal', 'defeq': 'definitionally equal', 'not defeq': 'up to isomorphism'};
   // columns with a natural order sort by it, most interesting first; the default
