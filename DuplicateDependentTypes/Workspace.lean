@@ -54,6 +54,27 @@ def loadWorkspace (dir : FilePath) : IO Workspace := do
   let modules := sorted.foldl (fun acc m => if acc.back?.map (·.1) == some m.1 then acc else acc.push m) #[]
   return { dir, name := ws.root.prettyName, modules }
 
+private partial def oleansIn (dir : FilePath) (pre : Name) (acc : Array Name) : IO (Array Name) := do
+  let mut acc := acc
+  for entry in ← dir.readDir do
+    if ← entry.path.isDir then
+      acc ← oleansIn entry.path (pre ++ .mkSimple entry.fileName) acc
+    else if entry.path.extension == some "olean" then
+      acc := acc.push (pre ++ .mkSimple (entry.path.fileStem.getD ""))
+  return acc
+
+/-- The modules to import for a prefix: its own `.olean` if there is one, otherwise every module
+below it on the search path, sorted (the order fixes the extraction order). -/
+def modulesFor (p : Name) : IO (Array Name) := do
+  let sp ← searchPathRef.get
+  for dir in sp do
+    if ← (modToFilePath dir p "olean").pathExists then return #[p]
+  let mut out := #[]
+  for dir in sp do
+    let sub := modDir dir p
+    if ← sub.isDir then out ← oleansIn sub p out
+  return out.qsort Name.lt
+
 def oleanOf? (m : Name) : IO (Option FilePath) := do
   match ← (findOLean m).toBaseIO with
   | .ok p => return if ← p.pathExists then some p else none

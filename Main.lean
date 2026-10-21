@@ -62,8 +62,8 @@ unsafe def main (args : List String) : IO UInt32 := do
   initSearchPath (← findSysroot)
   let (imports, prefixes) ← selectModules o ws?
   IO.eprintln s!"duplicates: importing {imports.size} module(s)"
-  let env ← importEnv imports
-  IO.eprintln s!"duplicates: imported in {(← IO.monoMsNow) - t0} ms"
+  enableInitializersExecution  -- again: loading a `lakefile.lean` resets it
+  let env ← importModules (imports.map ({ module := · })) {} (trustLevel := 1024) (leakEnv := true) (loadExts := true)
   let run {α} (x : MetaM α) : IO α := return (← x.toIO coreContext { env }).1
   let c ← run (cluster prefixes o.jobs)
   let mut files : Std.HashMap Name FilePath := ws?.elim {} (·.modules.foldl (fun m (n, f) => m.insert n f) {})
@@ -71,12 +71,10 @@ unsafe def main (args : List String) : IO UInt32 := do
     unless files.contains d.module do
       if let some f ← sourceOfOLean d.module then files := files.insert d.module f
   let fileOf := fun m => files[m]?.map fun f => (if f.isAbsolute then f else cwd / f).normalize
-  let classes := c.classes
   let annotated ← run do
-    let parts ← spawnAll ((shares classes.size o.jobs 1).map fun idxs =>
-      idxs.mapM fun i => return (i, ← annotateClass fileOf classes[i]!))
+    let parts ← spawnAll ((shares c.classes.size o.jobs 1).map fun idxs =>
+      idxs.mapM fun i => return (i, ← annotateClass fileOf c.classes[i]!))
     let groups := (parts.flatten.qsort (·.1 < ·.1)).map (·.2)
-    IO.eprintln s!"duplicates: classes annotated at {(← IO.monoMsNow) - t0} ms"
     markUsed (dropMirrors (groups.filter fun ms => (ms.filter (·.dep?.isNone)).size ≥ 2)) o.jobs
   -- rank: groups with statements equal only up to isomorphism first, then more independent proofs
   let strength (ms : Array Member) : Nat :=
