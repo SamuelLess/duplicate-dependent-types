@@ -35,37 +35,7 @@ structure Decl where
   type : Expr
   deriving Inhabited
 
-/-! ## Loading and extraction -/
-
-private def modDir (base : System.FilePath) : Lean.Name → System.FilePath
-  | .str p h => modDir base p / h
-  | _ => base
-
-private partial def oleanModulesIn (dir : System.FilePath) (pre : Lean.Name) (acc : Array Lean.Name) :
-    IO (Array Lean.Name) := do
-  let mut acc := acc
-  for entry in ← dir.readDir do
-    if ← entry.path.isDir then
-      acc ← oleanModulesIn entry.path (pre ++ .mkSimple entry.fileName) acc
-    else if entry.path.extension == some "olean" then
-      acc := acc.push (pre ++ .mkSimple (entry.path.fileStem.getD ""))
-  return acc
-
-/-- The modules to import for a prefix: its own `.olean` if there is one, otherwise every module
-below it on the search path, sorted (the order fixes the extraction order). -/
-def modulesFor (p : Lean.Name) : IO (Array Lean.Name) := do
-  let sp ← searchPathRef.get
-  for dir in sp do
-    if ← (modToFilePath dir p "olean").pathExists then return #[p]
-  let mut out := #[]
-  for dir in sp do
-    let sub := modDir dir p
-    if ← sub.isDir then out ← oleanModulesIn sub p out
-  return out.qsort Lean.Name.lt
-
-unsafe def importEnv (mods : Array Lean.Name) : IO Environment := do
-  enableInitializersExecution
-  importModules (mods.map ({ module := · })) {} (trustLevel := 1024) (leakEnv := true) (loadExts := true)
+/-! ## Extraction -/
 
 def isAuxiliary (n : Lean.Name) : CoreM Bool := do
   let env ← getEnv
