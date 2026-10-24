@@ -41,6 +41,8 @@ structure Member where
   trivial : Bool := false
   simp : Bool := false
   used : Bool := false
+  /-- For a `not defeq` member: how the first independent member proves it (`witness?`). -/
+  wit? : Option Json := none
   deriving Inhabited
 
 /-! ## Members -/
@@ -104,6 +106,49 @@ def annotateMember (fileOf : Lean.Name → Option FilePath) (others : NameSet) (
                   src := "\n".intercalate (lines.extract (lo - 1) hi).toList,
                   trivial := small && proof.length ≤ trivialChars }
 
+/-- `a = b ↦ b = a` (also `↔`, `≠`, `∨`), or `none`. -/
+def flipped? (e : Expr) : Option Expr :=
+  match e.getAppFnArgs with
+  | (``Eq, #[α, a, b]) => some (mkApp3 e.getAppFn α b a)
+  | (``Ne, #[α, a, b]) => some (mkApp3 e.getAppFn α b a)
+  | (``Iff, #[a, b]) | (``Or, #[a, b]) => some (mkApp2 e.getAppFn b a)
+  | _ => none
+
+/-- How `canon` proves the statement `t` up to the order of hypotheses and the sides of the
+conclusion: `fun x₀ … xₙ => @canon a₀ … aₘ` (then `.symm` if `symm`), where `aᵢ` is the binder
+`xⱼ` of `t` (`j`) or found by unification or instance synthesis (`null`). `none` if no such term
+was found (e.g. currying, or a reducible unfolding in a hypothesis). -/
+def witness? (canon : Lean.Name) (t : Expr) : MetaM (Option Json) := withReducible do
+  let ci ← getConstInfo canon
+  forallTelescopeReducing t fun xs concl => do
+    for symm in [false, true] do
+      let some target := (if symm then flipped? concl else some concl) | continue
+      let s ← saveState
+      let us ← ci.levelParams.mapM fun _ => mkFreshLevelMVar
+      let (ms, bis, cconcl) ← forallMetaTelescopeReducing (ci.type.instantiateLevelParams ci.levelParams us)
+      if ← isDefEq cconcl target then
+        let mut args : Array Json := #[]
+        let mut used : Array Bool := .replicate xs.size false
+        let mut ok := true
+        for m in ms, bi in bis do
+          let v ← instantiateMVars m
+          if let some j := xs.idxOf? v then args := args.push (toJson j); used := used.set! j true; continue
+          unless v.isMVar do args := args.push Json.null; continue
+          let mut found := false
+          for j in [:xs.size] do
+            if !used[j]! && (← isDefEq m xs[j]!) then
+              args := args.push (toJson j); used := used.set! j true; found := true; break
+          if found then continue
+          if bi.isInstImplicit then
+            if let some inst ← (try synthInstance? (← inferType m) catch _ => pure none) then
+              if ← isDefEq m inst then args := args.push Json.null; continue
+          ok := false; break
+        if ok && !(← instantiateMVars (mkAppN (.const canon us) ms)).hasExprMVar then
+          s.restore
+          return some (Json.mkObj [("canon", toJson canon), ("args", Json.arr args), ("symm", symm), ("arity", xs.size)])
+      s.restore
+    return none
+
 /-- The members of a class, with `rel?` filled in for the independent proofs. -/
 def annotateClass (fileOf : Lean.Name → Option FilePath) (ds : Array Decl) : MetaM (Array Member) := do
   let names : NameSet := ds.foldl (·.insert ·.name) {}
@@ -126,7 +171,13 @@ def annotateClass (fileOf : Lean.Name → Option FilePath) (ds : Array Decl) : M
       let r ← guarded pairHeartbeats (isDefEq t₀ t)
       modify fun s => { s with cache := {} }
       pure (if let .ok true := r then "defeq" else "not defeq")
-    ms := ms.modify i ({ · with rel? := some rel })
+    let wit? ← if rel != "not defeq" then pure none else do
+      let some ci₀ := (← getEnv).find? ms[i₀]!.decl.name | pure none
+      let some ci := (← getEnv).find? ms[i]!.decl.name | pure none
+      let r ← guarded pairHeartbeats (witness? ci₀.name ci.type)
+      modify fun s => { s with cache := {} }
+      pure (match r with | .ok w => w | .error _ => none)
+    ms := ms.modify i ({ · with rel? := some rel, wit? })
   return ms
 
 /-- Drop the groups that mirror another: a group with a member generated from a member of another
@@ -244,7 +295,7 @@ def groupJson (id r : Nat) (wsDir : FilePath) (url? : Lean.Name → Option Strin
     ("line", m.line), ("end", m.endLine), ("from", m.srcFrom), ("src", m.src), ("sig", m.sig),
     ("url", toJson (if m.line == 0 then none else (url? m.decl.module).map (· ++ s!"#L{m.line}-L{m.endLine}"))),
     ("dep", toJson m.dep?), ("gen", toJson m.gen?), ("rel", toJson m.rel?), ("trivial", m.trivial), ("used", m.used),
-    ("private", isPrivateName m.decl.name), ("viaClasses", m.decl.viaClasses)]
+    ("private", isPrivateName m.decl.name), ("viaClasses", m.decl.viaClasses), ("wit", toJson m.wit?)]
   Json.mkObj [
     ("id", toString id), ("r", r), ("a", toJson a.decl.name), ("b", toJson b.decl.name), ("n", ms.size),
     ("m", toJson ((ind.map (·.decl.module.toString)).toList.eraseDups.toArray.qsort (· < ·))),
