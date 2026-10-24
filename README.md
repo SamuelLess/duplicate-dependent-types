@@ -34,7 +34,21 @@ lake exe duplicates --modules A.B,C         # only the modules below these prefi
 lake exe duplicates --jsonl out.jsonl       # only the JSONL, to this file
 lake exe duplicates --html out.html         # only the HTML, to this file
 lake exe duplicates --jobs 8                # parallel tasks (default 4)
+lake exe duplicates --private               # private theorems too
+lake exe duplicates --classes classes.jsonl # statements up to copied constants, and the classes
 ```
+
+`--classes` is for projects that copy code: a kit of definitions and lemmas pasted into several
+files under different namespaces. Before comparing statements, the constants of the analysed
+modules are put into structural classes, bottom-up in declaration order:
+* definitions are compared by type and value, theorems by type, and inductive types by their
+  constructors;
+* in each comparison, the constants mentioned are taken up to their own classes;
+* universe parameters are renamed positionally, binder names and annotations are ignored.
+
+Every statement is then rewritten to the classes' representatives, so lemmas about two copies
+of a kit compare equal. The classes with at least two members (auxiliary constants left out)
+are written as JSONL: `kind`, `n`, `members` (`name`, `module`, `private`, `line`, `end`).
 
 The HTML page is one file (data, styles and script inlined) with a filterable list of the groups
 and a view of each group's statements and sources, headed by the versions of Lean and of the
@@ -55,7 +69,8 @@ One JSON object per line and group:
 | `u` | `all used`, `one side unused`, `none used` (by constants outside the group) |
 | `tw` | why `a`, `b` look like an API pair written on purpose (`adjacent`, `orientation`, `primed`, `contains-mem`, `symmetric names`, `simp`, `internal`), or `""` |
 | `url` (members) | the source on GitHub, `…/blob/<rev>/<path>#L<line>-L<end>` (`null` if not a GitHub checkout) |
-| `members` | `name`, `module`, `file`, `line`, `end`, `sig` (the signature), `src` (the source from line `from`), `dep` (why it is not an independent proof: it uses another member, is deprecated or generated with one), `gen`, `rel`, `trivial`, `used` |
+| `members` | `name`, `module`, `file`, `line`, `end`, `sig` (the signature), `src` (the source from line `from`), `dep` (why it is not an independent proof: it uses another member, is deprecated or generated with one), `gen`, `rel`, `trivial`, `used`, `private`, `viaClasses` (the statement matched only up to copied constants), `wit` |
+| `wit` (members) | for a `not defeq` member, how the first independent member proves it: `{canon, args, symm, arity}`. The member's statement is proved by `fun x₀ … x_{arity-1} => @canon a₀ …` (then `.symm`), where `aᵢ` is `x_{args[i]}`, or `_` if `args[i]` is `null` (found by unification). `null` if no such term exists (currying, unfolding) |
 
 ## Caveats
 
