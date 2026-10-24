@@ -3,17 +3,24 @@ import DuplicateDependentTypes
 open Lean System DuplicateDependentTypes
 
 def usage : String :=
-  "usage: lake exe duplicates [--modules A.B,C] [--jsonl FILE] [--html FILE] [--jobs N]
+  "usage: lake exe duplicates [--modules A.B,C] [--jsonl FILE] [--html FILE] [--jobs N] [--private] [--classes FILE]
 
 Finds the theorems of a Lake project whose statements are the same type up to isomorphism.
 Analyses the workspace's own libraries (build them first), or the modules below the given
-prefixes. Writes duplicates.jsonl and duplicates.html, or only the outputs given."
+prefixes. Writes duplicates.jsonl and duplicates.html, or only the outputs given.
+
+--private        include private theorems
+--classes FILE   compare statements up to copied constants (definitions, structures, lemmas
+                 that are structurally equal up to the names of other copies) and write those
+                 classes to FILE (JSONL)"
 
 structure Args where
   modules : Array Name := #[]
   jsonl? : Option FilePath := none
   html? : Option FilePath := none
   jobs : Nat := 4
+  priv : Bool := false
+  classes? : Option FilePath := none
 
 partial def parseArgs : List String → Args → Except String Args
   | [], o => pure o
@@ -21,6 +28,8 @@ partial def parseArgs : List String → Args → Except String Args
     parseArgs rest { o with modules := o.modules ++ ((v.splitOn ",").filter (!·.isEmpty)).toArray.map (·.toName) }
   | "--jsonl" :: v :: rest, o => parseArgs rest { o with jsonl? := some v }
   | "--html" :: v :: rest, o => parseArgs rest { o with html? := some v }
+  | "--private" :: rest, o => parseArgs rest { o with priv := true }
+  | "--classes" :: v :: rest, o => parseArgs rest { o with classes? := some v }
   | "--jobs" :: v :: rest, o => match v.toNat? with
     | some n => parseArgs rest { o with jobs := max 1 n }
     | none => throw s!"--jobs expects a number, got '{v}'"
@@ -65,7 +74,16 @@ unsafe def main (args : List String) : IO UInt32 := do
   enableInitializersExecution  -- again: loading a `lakefile.lean` resets it
   let env ← importModules (imports.map ({ module := · })) {} (trustLevel := 1024) (leakEnv := true) (loadExts := true)
   let run {α} (x : MetaM α) : IO α := return (← x.toIO coreContext { env }).1
-  let c ← run (cluster prefixes o.jobs)
+  let classes ← if o.classes?.isSome then do
+      let t ← IO.monoMsNow
+      let cs ← run (computeClasses prefixes isBelow)
+      IO.eprintln s!"duplicates: {cs.rep.size} constants in {cs.classes.size} classes of copies, {(← IO.monoMsNow) - t} ms"
+      pure cs
+    else pure {}
+  if let some p := o.classes? then
+    let ls ← run (classLines classes)
+    IO.FS.writeFile p ("".intercalate (ls.toList.map (· ++ "\n")))
+  let c ← run (cluster prefixes o.jobs { priv := o.priv, classes })
   let mut files : Std.HashMap Name FilePath := ws?.elim {} (·.modules.foldl (fun m (n, f) => m.insert n f) {})
   for d in c.classes.flatten do
     unless files.contains d.module do

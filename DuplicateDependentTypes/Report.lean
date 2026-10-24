@@ -243,7 +243,8 @@ def groupJson (id r : Nat) (wsDir : FilePath) (url? : Lean.Name → Option Strin
     ("name", toJson m.decl.name), ("module", toJson m.decl.module), ("file", toJson (m.file?.map relPath)),
     ("line", m.line), ("end", m.endLine), ("from", m.srcFrom), ("src", m.src), ("sig", m.sig),
     ("url", toJson (if m.line == 0 then none else (url? m.decl.module).map (· ++ s!"#L{m.line}-L{m.endLine}"))),
-    ("dep", toJson m.dep?), ("gen", toJson m.gen?), ("rel", toJson m.rel?), ("trivial", m.trivial), ("used", m.used)]
+    ("dep", toJson m.dep?), ("gen", toJson m.gen?), ("rel", toJson m.rel?), ("trivial", m.trivial), ("used", m.used),
+    ("private", isPrivateName m.decl.name), ("viaClasses", m.decl.viaClasses)]
   Json.mkObj [
     ("id", toString id), ("r", r), ("a", toJson a.decl.name), ("b", toJson b.decl.name), ("n", ms.size),
     ("m", toJson ((ind.map (·.decl.module.toString)).toList.eraseDups.toArray.qsort (· < ·))),
@@ -253,6 +254,27 @@ def groupJson (id r : Nat) (wsDir : FilePath) (url? : Lean.Name → Option Strin
     ("tw", apiTwin a b), ("members", Json.arr (ms.map member))]
 
 /-! ## Outputs -/
+
+def constKind : ConstantInfo → String
+  | .defnInfo _ => "def" | .thmInfo _ => "theorem" | .opaqueInfo _ => "opaque" | .inductInfo _ => "inductive"
+  | .ctorInfo _ => "ctor" | .recInfo _ => "rec" | .axiomInfo _ => "axiom" | .quotInfo _ => "quot"
+
+/-- One JSON line per constant class with at least two members (auxiliary constants such as
+`match_1`, `proof_1` and `eq_1` left out, and classes that consist only of them). -/
+def classLines (c : ConstClasses) : MetaM (Array String) := do
+  let env ← getEnv
+  let mut out := #[]
+  for ms in c.classes do
+    let ms ← ms.filterM fun n => return !(← isAuxiliary n)
+    if ms.size < 2 then continue
+    let some ci := env.find? ms[0]! | continue
+    let members ← ms.mapM fun n => do
+      let r? ← findDeclarationRanges? n
+      let mod := ((env.getModuleIdxFor? n).map (env.header.moduleNames[·.toNat]!)).getD .anonymous
+      return Json.mkObj [("name", toJson n), ("module", toJson mod), ("private", isPrivateName n),
+        ("line", (r?.map (·.range.pos.line)).getD 0), ("end", (r?.map (·.range.endPos.line)).getD 0)]
+    out := out.push (Json.mkObj [("kind", constKind ci), ("n", ms.size), ("members", Json.arr members)]).compress
+  return out
 
 /-- The page: the assets with the data spliced in (`<\/` so that no string ends the script). -/
 def html (info : Json) (lines : Array String) : String :=

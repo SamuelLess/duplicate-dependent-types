@@ -1,6 +1,7 @@
 import DuplicateDependentTypes.Encode
 import DuplicateDependentTypes.Normalize
 import DuplicateDependentTypes.Match
+import DuplicateDependentTypes.Classes
 
 /-!
 # Clustering
@@ -33,12 +34,23 @@ structure Decl where
   module : Lean.Name
   levelParams : List Lean.Name
   type : Expr
+  /-- The statement mentions constants that were replaced by their class representatives. -/
+  viaClasses : Bool := false
+  deriving Inhabited
+
+/-- What to extract and how. -/
+structure ExtractOpts where
+  /-- Include private theorems. -/
+  priv : Bool := false
+  /-- Constant classes to rewrite statements with (empty: none). -/
+  classes : ConstClasses := {}
   deriving Inhabited
 
 /-! ## Extraction -/
 
 def isAuxiliary (n : Lean.Name) : CoreM Bool := do
   let env ← getEnv
+  let n := (privateToUserName? n).getD n
   if ← isAutoDeclOrPrivate_Internal n then return true
   if isAuxRecursor env n || isNoConfusion env n || isRecCore env n || Meta.isMatcherCore env n then
     return true
@@ -58,7 +70,7 @@ def isBelow (prefixes : Array Lean.Name) : Lean.Name → Bool :=
 def canonLevels (n : Nat) : List Lean.Name := (List.range n).map (canonLevelName ·)
 
 /-- The theorems of the modules below `prefixes`, in module then name order. -/
-def extract (prefixes : Array Lean.Name) : CoreM (Array Decl) := do
+def extract (prefixes : Array Lean.Name) (o : ExtractOpts := {}) : CoreM (Array Decl) := do
   let env ← getEnv
   let below := isBelow prefixes
   let names := env.header.moduleNames
@@ -70,11 +82,12 @@ def extract (prefixes : Array Lean.Name) : CoreM (Array Decl) := do
     for c in cs do
       let n := c.name
       unless c matches .thmInfo _ do continue
-      if (env.getModuleIdxFor? n).map (·.toNat) != some idx || isPrivateName n then continue
+      if (env.getModuleIdxFor? n).map (·.toNat) != some idx || (!o.priv && isPrivateName n) then continue
       if (← isAuxiliary n) || Meta.isInstanceCore env n then continue
       let lps := canonLevels c.levelParams.length
       let type := c.type.instantiateLevelParams c.levelParams (lps.map Level.param)
-      out := out.push { name := n, module := m, levelParams := lps, type }
+      let type' := o.classes.apply type
+      out := out.push { name := n, module := m, levelParams := lps, type := type', viaClasses := !(type' == type) }
   return out
 
 /-- Is the tree size of `e` at most `limit`? -/
@@ -178,8 +191,8 @@ structure Clustering where
   /-- The classes with at least two members. -/
   classes : Array (Array Decl)
 
-def cluster (prefixes : Array Lean.Name) (jobs : Nat) : MetaM Clustering := do
-  let decls ← extract prefixes
+def cluster (prefixes : Array Lean.Name) (jobs : Nat) (o : ExtractOpts := {}) : MetaM Clustering := do
+  let decls ← extract prefixes o
   IO.eprintln s!"duplicates: analysing {decls.size} theorems in {jobs} task(s)"
   let outs ← spawnAll ((shares decls.size jobs 64).map (runShare decls))
   let mut atoms : Array Expr := #[]
