@@ -1,10 +1,17 @@
 # duplicate-dependent-types
 
-Finds the theorems of a Lean project whose statements are the same type up to isomorphism —
-reordered or curried hypotheses, `∃`/`∧` currying, swapped sides of `=`/`↔`/`∨`, `¬`/`≠` unfolded
-— and that are each proved separately. Statements are normalised by taking them apart into a
-graph of hypotheses and conclusions, then compared up to renaming and reordering. The result is a
-JSONL file with one line per group of duplicates and a self-contained HTML page to browse them.
+Quickly finds theorems that are proved separately although their statements are the same type up
+to (some) binder permutations, `∃`/`∧` currying, swapped sides of `=`/`↔`/`∨` and unfolded
+definitions such as `¬`, `≠` and `∣`, e.g.
+
+```lean4
+theorem original : ∀ m n : Nat, 0 < n → m ∣ n → m ≤ n := by sorry
+
+theorem duplicate : ∀ n m : Nat, (∃ k, n = m * k) ∧ 0 < n → m ≤ n := by sorry
+```
+
+Outputs a JSONL file with one line per group of duplicates and a self-contained HTML page to
+browse them, [like this](https://pages.samuelless.de/lean/duplicate-dependent-types/).
 
 ## Installation
 
