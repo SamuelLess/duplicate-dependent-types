@@ -98,7 +98,7 @@ def guarded (raw : Nat) (x : MetaM α) : MetaM (Except String α) :=
   tryCatchRuntimeEx (do
       let start ← IO.getNumHeartbeats
       let budget (c : Core.Context) : Core.Context :=
-        { c with maxHeartbeats := raw, initHeartbeats := start, options := maxHeartbeats.set c.options (raw / 1000) }
+        { c.setOptions (maxHeartbeats.set c.options (raw / 1000)) with maxHeartbeats := raw, initHeartbeats := start }
       return .ok (← withTheReader Core.Context budget x))
     fun e => return .error (← try e.toMessageData.toString catch _ => pure "error")
 
