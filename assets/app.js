@@ -55,7 +55,8 @@
   $('versions').innerHTML = [rev('Lean', 'v' + META.lean, 'https://github.com/leanprover/lean4/tree/v' + META.lean)].concat(
     (META.versions || []).map(function (v) {
       return rev(v.name, v.rev.slice(0, 7), v.url ? v.url.replace(/\.git$/, '') + '/tree/' + v.rev : '');
-    })).join('\n· ');
+    })).concat([esc(META.analysed.toLocaleString('en-US')) + ' of ' +
+      esc(META.extracted.toLocaleString('en-US')) + ' theorems compared']).join('\n· ');
 
   // the list
   var byId = {};
