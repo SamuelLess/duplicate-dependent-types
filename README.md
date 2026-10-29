@@ -15,22 +15,23 @@ browse them, [like this](https://pages.samuelless.de/lean/duplicate-dependent-ty
 
 ## Installation
 
-Lean core only, no other dependencies. In `lakefile.toml`:
+In `lakefile.toml`:
 
 ```toml
 [[require]]
 name = "duplicate-dependent-types"
 git = "https://github.com/SamuelLess/duplicate-dependent-types"
-rev = "main"
+rev = "<rev>"
 ```
 
 or in `lakefile.lean`:
 
 ```lean
-require «duplicate-dependent-types» from git "https://github.com/SamuelLess/duplicate-dependent-types" @ "main"
+require «duplicate-dependent-types» from git "https://github.com/SamuelLess/duplicate-dependent-types" @ "<rev>"
 ```
 
-then `lake update duplicate-dependent-types`.
+where `<rev>` should be the correct version tag like `v4.36.0-r2`.
+Next, run `lake update duplicate-dependent-types`.
 
 ## Usage
 
